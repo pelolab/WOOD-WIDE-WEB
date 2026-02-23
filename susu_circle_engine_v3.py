@@ -340,6 +340,11 @@ class SusuCircle:
                     log.warning(f"  🚫 {msg}")
                     report["warnings"].append(msg)
 
+        # Re-evaluate eligibility after contribution processing in case
+        # status changed during this cycle (e.g., member suspended).
+        if intended_recipient is None or not self._is_member_eligible_for_payout(intended_recipient):
+            intended_recipient = self._next_eligible_recipient()
+
         # --- Payout ---------------------------------------------------------
         if intended_recipient is None:
             self._escrow += pot
@@ -386,10 +391,13 @@ class SusuCircle:
 
     def _next_eligible_recipient(self) -> str | None:
         for name in self.payout_schedule:
-            record = self.members[name]
-            if record.status == MemberStatus.ACTIVE and not record.has_received_payout:
+            if self._is_member_eligible_for_payout(name):
                 return name
         return None
+
+    def _is_member_eligible_for_payout(self, name: str) -> bool:
+        record = self.members[name]
+        return record.status == MemberStatus.ACTIVE and not record.has_received_payout
 
     # -- Arrears Settlement --------------------------------------------------
 
@@ -556,11 +564,14 @@ class SusuCircle:
                 note=f"refund (gross: {gross_refund}, arrears deducted: {total_owed})",
             )
 
-            # Mark forfeited arrears as settled
+            # Mark forfeited arrears as settled for reporting/reconciliation.
             for debt in pending:
+                remaining = round(debt.amount - self.get_partially_settled_amount(debt.id), 2)
+                if remaining <= 0:
+                    continue
                 self._append(
                     circle_month=self.current_month, tx_type=TxType.SETTLEMENT,
-                    member=name, amount=0, status=PaymentStatus.VERIFIED,
+                    member=name, amount=remaining, status=PaymentStatus.VERIFIED,
                     debt_id=debt.id,
                     note="forfeited on member removal",
                 )
